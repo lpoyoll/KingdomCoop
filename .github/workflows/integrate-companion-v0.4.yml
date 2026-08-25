@@ -5,14 +5,13 @@ on:
     branches:
       - companion-coop/v0.4
     paths:
-      - '.kingdomcoop/KingdomCoop-v0.4-source-overlay.zip'
+      - '.kingdomcoop/v0.4-b64/**'
       - '.github/workflows/integrate-companion-v0.4.yml'
 
 permissions:
   contents: write
 
 env:
-  OVERLAY_ZIP: .kingdomcoop/KingdomCoop-v0.4-source-overlay.zip
   OVERLAY_SHA256: a4154fadb892d3547babfb007c17f69776f539bdc2a9bca2a7129388f9283e9b
   OVERLAY_BYTES: 54121
 
@@ -27,10 +26,20 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify and expand Companion Co-op source package
+      - name: Reconstruct and verify Companion Co-op source package
         shell: pwsh
         run: |
-          $zip = (Resolve-Path $env:OVERLAY_ZIP).Path
+          $parts = Get-ChildItem '.kingdomcoop\v0.4-b64\part-*.txt' | Sort-Object Name
+          if ($parts.Count -ne 10) { throw "Expected 10 payload chunks, found $($parts.Count)." }
+
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          Write-Host "Base64 chars: $($b64.Length)"
+          if ($b64.Length -ne 72164) { throw "Base64 length mismatch: expected 72164, got $($b64.Length)" }
+
+          $bytes = [Convert]::FromBase64String($b64)
+          $zip = Join-Path $env:RUNNER_TEMP 'KingdomCoop-v0.4-source-overlay.zip'
+          [IO.File]::WriteAllBytes($zip, $bytes)
+
           $item = Get-Item $zip
           Write-Host "Overlay bytes: $($item.Length)"
           if ($item.Length -ne [int64]$env:OVERLAY_BYTES) {
@@ -45,9 +54,6 @@ jobs:
           $dest = Join-Path $env:RUNNER_TEMP 'kingdomcoop-v04'
           if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
           New-Item -ItemType Directory -Path $dest | Out-Null
-
-          # bsdtar ships on the Windows runner and is more reliable for this
-          # package than PowerShell Expand-Archive on the current runner image.
           & tar -xf $zip -C $dest
           if ($LASTEXITCODE -ne 0) { throw "tar failed with exit code $LASTEXITCODE" }
 
