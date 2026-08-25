@@ -76,6 +76,20 @@ jobs:
           }
           $text = $text.Replace('0.17.0', '0.17.1')
 
+          # Git checkout preserves LF while PowerShell here-strings on the
+          # Windows runner use CRLF. Normalise both sides inside Replace-Once
+          # so multi-line anchors remain exact and fail closed on real drift.
+          $replaceNeedle = '    $s = Read-Utf8 $p'
+          $replaceNormalised = @'
+    $s = (Read-Utf8 $p).Replace("`r`n","`n")
+    $old = $old.Replace("`r`n","`n")
+    $new = $new.Replace("`r`n","`n")
+'@
+          if (-not $text.Contains($replaceNeedle)) {
+            throw 'Could not locate Replace-Once source normalisation point.'
+          }
+          $text = $text.Replace($replaceNeedle, $replaceNormalised.TrimEnd())
+
           # The package prepends the v0.4 feature layer before the v0.3
           # foundation it extends. Move the complete layer after the foundation:
           # transport methods, partial classes, the companion session and
