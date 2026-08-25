@@ -75,6 +75,7 @@ jobs:
             throw 'Expected the verified 0.17.0 package guard before rebasing.'
           }
           $text = $text.Replace('0.17.0', '0.17.1')
+          $text = $text.Replace('kdcmp_party_extension.lua', 'kcdmp_party_extension.lua')
 
           # Git checkout preserves LF while PowerShell here-strings on the
           # Windows runner use CRLF. Normalise both sides inside Replace-Once
