@@ -1,0 +1,54 @@
+name: Build Companion Co-op v0.4
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - companion-coop/v0.4
+    paths:
+      - ".github/workflows/build-companion-v0.4.yml"
+      - "dotnet/**"
+      - "KCDMP_launcher/**"
+      - "kdcmp/**"
+      - "tools/**"
+      - "installer/**"
+      - "VERSION"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\tools\Build-Installer.ps1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build direct-install package
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\tools\Build-DirectInstall.ps1" -SkipPublish
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload release artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KingdomCoop-v0.4-build-output
+          path: |
+            release/*.exe
+            release/*.zip
+            release/KCDMP/**
+          if-no-files-found: warn
