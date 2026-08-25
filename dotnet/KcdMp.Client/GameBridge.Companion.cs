@@ -126,6 +126,77 @@ public partial class GameBridge
         return v < 0 ? null : v;
     }
 
+    private readonly record struct LootManifestPacket(
+        byte Phase, uint SnapshotId, string Source, Guid ItemClass,
+        ushort Amount, float Health);
+
+    private readonly record struct LootTakePacket(
+        byte Claimer, bool Accepted, uint TakeId, string Source,
+        Guid ItemClass, ushort Amount, float Health);
+
+    private static bool TryParseLootManifest(
+        byte[] payload, out LootManifestPacket packet)
+    {
+        packet = default;
+        if (payload.Length < 1 + Protocol.LootManifestFixedBytes + 1)
+            return false;
+
+        ReadOnlySpan<byte> body = payload.AsSpan(1);
+        byte phase = body[0];
+        uint snapshotId =
+            BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(1, 4));
+        int sourceLength = body[5];
+        if (body.Length != Protocol.LootManifestFixedBytes + sourceLength)
+            return false;
+
+        string source = Encoding.UTF8.GetString(body.Slice(6, sourceLength));
+        int offset = 6 + sourceLength;
+        var itemClass =
+            new Guid(body.Slice(offset, Protocol.ItemClassLen));
+        offset += Protocol.ItemClassLen;
+        ushort amount =
+            BinaryPrimitives.ReadUInt16LittleEndian(body.Slice(offset, 2));
+        offset += 2;
+        float health =
+            BinaryPrimitives.ReadSingleLittleEndian(body.Slice(offset, 4));
+
+        packet = new LootManifestPacket(
+            phase, snapshotId, source, itemClass, amount, health);
+        return true;
+    }
+
+    private static bool TryParseLootTake(
+        byte[] payload, out LootTakePacket packet)
+    {
+        packet = default;
+        if (payload.Length < 2 + Protocol.LootTakeFixedBytes + 1)
+            return false;
+
+        byte claimer = payload[0];
+        bool accepted = payload[1] != 0;
+        ReadOnlySpan<byte> body = payload.AsSpan(2);
+        uint takeId =
+            BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(0, 4));
+        int sourceLength = body[4];
+        if (body.Length != Protocol.LootTakeFixedBytes + sourceLength)
+            return false;
+
+        string source = Encoding.UTF8.GetString(body.Slice(5, sourceLength));
+        int offset = 5 + sourceLength;
+        var itemClass =
+            new Guid(body.Slice(offset, Protocol.ItemClassLen));
+        offset += Protocol.ItemClassLen;
+        ushort amount =
+            BinaryPrimitives.ReadUInt16LittleEndian(body.Slice(offset, 2));
+        offset += 2;
+        float health =
+            BinaryPrimitives.ReadSingleLittleEndian(body.Slice(offset, 4));
+
+        packet = new LootTakePacket(
+            claimer, accepted, takeId, source, itemClass, amount, health);
+        return true;
+    }
+
     private async Task<bool> TryHandleCompanionPacketAsync(
         int type, byte[] payload, CancellationToken ct)
     {
@@ -164,30 +235,19 @@ public partial class GameBridge
             return true;
         }
 
-        if (type == Protocol.LootManifestDown
-            && payload.Length >= 1 + Protocol.LootManifestFixedBytes + 1)
+        if (type == Protocol.LootManifestDown)
         {
-            byte sourceId = payload[0];
-            var body = payload.AsSpan(1);
-            byte phase = body[0];
-            uint snap = BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(1, 4));
-            int sourceLen = body[5];
-            if (body.Length != Protocol.LootManifestFixedBytes + sourceLen) return true;
+            if (!TryParseLootManifest(payload, out var packet))
+                return true;
 
-            string source = Encoding.UTF8.GetString(body.Slice(6, sourceLen));
-            int o = 6 + sourceLen;
-            var cls = new Guid(body.Slice(o, Protocol.ItemClassLen)); o += Protocol.ItemClassLen;
-            ushort amount = BinaryPrimitives.ReadUInt16LittleEndian(body.Slice(o, 2)); o += 2;
-            float health = BinaryPrimitives.ReadSingleLittleEndian(body.Slice(o, 4));
-
-            string call = phase switch
+            string call = packet.Phase switch
             {
                 Protocol.LootManifestPhaseBegin =>
-                    $"KCD2MP_LootManifestBegin(\"{snap}\",\"{EscapeLua(source)}\")",
+                    $"KCD2MP_LootManifestBegin(\"{packet.SnapshotId}\",\"{EscapeLua(packet.Source)}\")",
                 Protocol.LootManifestPhaseItem =>
-                    $"KCD2MP_LootManifestItem(\"{snap}\",\"{EscapeLua(source)}\",\"{cls:D}\",{amount},{health.ToString("R", CultureInfo.InvariantCulture)})",
+                    $"KCD2MP_LootManifestItem(\"{packet.SnapshotId}\",\"{EscapeLua(packet.Source)}\",\"{packet.ItemClass:D}\",{packet.Amount},{packet.Health.ToString("R", CultureInfo.InvariantCulture)})",
                 Protocol.LootManifestPhaseEnd =>
-                    $"KCD2MP_LootManifestEnd(\"{snap}\",\"{EscapeLua(source)}\")",
+                    $"KCD2MP_LootManifestEnd(\"{packet.SnapshotId}\",\"{EscapeLua(packet.Source)}\")",
                 _ => "",
             };
             if (call.Length > 0)
@@ -195,36 +255,26 @@ public partial class GameBridge
             return true;
         }
 
-        if (type == Protocol.LootTakeDown
-            && payload.Length >= 2 + Protocol.LootTakeFixedBytes + 1)
+        if (type == Protocol.LootTakeDown)
         {
-            byte claimer = payload[0];
-            bool accepted = payload[1] != 0;
-            var body = payload.AsSpan(2);
-            uint takeId = BinaryPrimitives.ReadUInt32LittleEndian(body.Slice(0, 4));
-            int sourceLen = body[4];
-            if (body.Length != Protocol.LootTakeFixedBytes + sourceLen) return true;
+            if (!TryParseLootTake(payload, out var packet))
+                return true;
 
-            string source = Encoding.UTF8.GetString(body.Slice(5, sourceLen));
-            int o = 5 + sourceLen;
-            var cls = new Guid(body.Slice(o, Protocol.ItemClassLen)); o += Protocol.ItemClassLen;
-            ushort amount = BinaryPrimitives.ReadUInt16LittleEndian(body.Slice(o, 2)); o += 2;
-            float health = BinaryPrimitives.ReadSingleLittleEndian(body.Slice(o, 4));
-            bool mine = claimer == _myGhostId;
-
+            bool mine = packet.Claimer == _myGhostId;
             if (mine)
             {
-                lock (_companionTakeLock) _companionOpenTakes.Remove(takeId);
+                lock (_companionTakeLock)
+                    _companionOpenTakes.Remove(packet.TakeId);
             }
 
             try
             {
                 await ExecLuaAsync(
-                    $"if KCD2MP_LootTakeResolved then KCD2MP_LootTakeResolved(\"{takeId}\",{(accepted ? "true" : "false")},{(mine ? "true" : "false")},\"{EscapeLua(source)}\",\"{cls:D}\",{amount},{health.ToString("R", CultureInfo.InvariantCulture)}) end");
+                    $"if KCD2MP_LootTakeResolved then KCD2MP_LootTakeResolved(\"{packet.TakeId}\",{(packet.Accepted ? "true" : "false")},{(mine ? "true" : "false")},\"{EscapeLua(packet.Source)}\",\"{packet.ItemClass:D}\",{packet.Amount},{packet.Health.ToString("R", CultureInfo.InvariantCulture)}) end");
             }
             catch { }
 
-            if (accepted && mine && !config.IsHosting)
+            if (packet.Accepted && mine && !config.IsHosting)
                 _ = CheckpointCompanionProfileAsync(CancellationToken.None);
 
             return true;
