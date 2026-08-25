@@ -13,6 +13,8 @@ permissions:
 
 env:
   OVERLAY_ZIP: .kingdomcoop/KingdomCoop-v0.4-source-overlay.zip
+  OVERLAY_SHA256: a4154fadb892d3547babfb007c17f69776f539bdc2a9bca2a7129388f9283e9b
+  OVERLAY_BYTES: 54121
 
 jobs:
   integrate-and-build:
@@ -25,14 +27,35 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Expand Companion Co-op source package
+      - name: Verify and expand Companion Co-op source package
         shell: pwsh
         run: |
+          $zip = (Resolve-Path $env:OVERLAY_ZIP).Path
+          $item = Get-Item $zip
+          Write-Host "Overlay bytes: $($item.Length)"
+          if ($item.Length -ne [int64]$env:OVERLAY_BYTES) {
+            throw "Overlay byte length mismatch: expected $env:OVERLAY_BYTES, got $($item.Length)"
+          }
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          Write-Host "Overlay SHA256: $hash"
+          if ($hash -ne $env:OVERLAY_SHA256) {
+            throw "Overlay SHA256 mismatch: expected $env:OVERLAY_SHA256, got $hash"
+          }
+
           $dest = Join-Path $env:RUNNER_TEMP 'kingdomcoop-v04'
           if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
-          Expand-Archive -Path $env:OVERLAY_ZIP -DestinationPath $dest -Force
+          New-Item -ItemType Directory -Path $dest | Out-Null
+
+          # bsdtar ships on the Windows runner and is more reliable for this
+          # package than PowerShell Expand-Archive on the current runner image.
+          & tar -xf $zip -C $dest
+          if ($LASTEXITCODE -ne 0) { throw "tar failed with exit code $LASTEXITCODE" }
+
           $pack = Get-ChildItem $dest -Directory | Select-Object -First 1
           if (-not $pack) { throw 'Source package root not found after extraction.' }
+          if (-not (Test-Path (Join-Path $pack.FullName 'APPLY-v0.4.ps1'))) {
+            throw "APPLY-v0.4.ps1 missing from extracted package root $($pack.FullName)"
+          }
           "KINGDOMCOOP_PACK=$($pack.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Apply all Companion Co-op systems
