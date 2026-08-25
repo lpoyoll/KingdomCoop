@@ -1,0 +1,116 @@
+@inherits ModalBase
+@using KCDMP_launcher.Models
+@using KCDMP_launcher.Pages
+@using System.Windows.Forms
+@using System.Threading
+
+@if (IsVisible)
+{
+    <div class="modal-overlay @(isClosing ? "closing" : "" )">
+        <div class="modal-box" @onclick:stopPropagation="true">
+
+            <div class="modal-frame-top modal-frame-bg"></div>
+
+            <div class="modal-content" style="text-align: left;">
+                <div class="modal-title" style="text-align: center;">LAUNCHER SETTINGS</div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Game Executable Path (Modding Tools build)</label>
+
+                    <div style="display: flex; gap: 10px;">
+                        <input class="kcd-input" @bind="Settings.GamePath" style="flex-grow: 1;" />
+
+                        <button class="kcd-btn" @onclick="BrowseGamePath" style="padding: 8px 15px; font-size: 12px;">
+                            BROWSE
+                        </button>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(Settings.GamePath) && !Home.IsModdingToolsBuild(Settings.GamePath))
+                    {
+                        <div class="kcd-hint" style="color: var(--kcd-warn);">
+                            This does not look like the Modding Tools build. Multiplayer needs
+                            KCD2Mod\Bin\Win64ReleaseSteamLTO_DLL\KingdomCome.exe — the retail
+                            executable has no debug API and no module DLLs to hook.
+                        </div>
+                    }
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Multiplayer DLL Path</label>
+                    <input class="kcd-input" @bind="Settings.DllPath" />
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Agent Path (KcdMpClient.exe)</label>
+                    <input class="kcd-input" @bind="Settings.AgentPath" />
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Master Server URL</label>
+                    <input class="kcd-input" @bind="Settings.MasterServerUrl" />
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Master Server Path (auto-started when this URL is loopback)</label>
+                    <input class="kcd-input" @bind="Settings.MasterServerPath" />
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Server Info Port</label>
+                    <input class="kcd-input" type="number" @bind="Settings.ServerInfoPort" />
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Relay Path (used when hosting)</label>
+                    <input class="kcd-input" @bind="Settings.RelayPath" />
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label">Host Port</label>
+                    <input class="kcd-input" type="number" @bind="Settings.HostPort" />
+                </div>
+
+                <div class="kcd-input-group">
+                    <label class="kcd-label" style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" @bind="Settings.VoiceChatEnabled" />
+                        Voice Chat Enabled
+                    </label>
+                </div>
+
+                <div class="modal-actions">
+                    <button class="kcd-btn primary" @onclick="OnSave">SAVE & CLOSE</button>
+                    <button class="kcd-btn" @onclick="CloseModalAsync">CANCEL</button>
+                </div>
+            </div>
+
+            <div class="modal-frame-bottom modal-frame-bg"></div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public AppSettings Settings { get; set; } = new();
+    [Parameter] public EventCallback OnSave { get; set; }
+
+    private void BrowseGamePath()
+    {
+        var thread = new Thread(() =>
+        {
+            var dialog = new OpenFileDialog();
+            dialog.Filter = "KingdomCome.exe|KingdomCome.exe|Executables (*.exe)|*.exe|All Files (*.*)|*.*";
+            // Both builds use this filename, so the title has to say which one.
+            dialog.Title = "Select KingdomCome.exe from the Modding Tools build (KCD2Mod\\Bin\\Win64ReleaseSteamLTO_DLL)";
+
+            if (dialog.ShowDialog() == DialogResult.OK)
+            {
+                Settings.GamePath = dialog.FileName;
+
+                InvokeAsync(StateHasChanged);
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+    }
+}

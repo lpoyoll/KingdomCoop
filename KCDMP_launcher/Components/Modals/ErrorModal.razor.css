@@ -1,0 +1,12 @@
+﻿.modal-title {
+    color: var(--kcd-danger-bright);
+}
+
+.error-box {
+    z-index: 9999;
+}
+
+#perror {
+    color: var(--kcd-warn);
+    text-align: center;
+}

@@ -1,0 +1,12 @@
+.modal-title {
+    color: var(--kcd-gold);
+}
+
+.modal-content {
+    text-align: center;
+}
+
+p {
+    color: var(--kcd-parchment-dim);
+    margin-bottom: 25px;
+}

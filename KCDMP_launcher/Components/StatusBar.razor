@@ -1,0 +1,44 @@
+@using KCDMP_launcher.Components.Shared
+<div class="status-bar">
+    <div class="status-left">
+        <span class="status-btn" @onclick="OnToggleFilters" style="color: var(--kcd-gold); font-weight: bold;">
+            [TAB] FILTERS @(IsFilterActive ? "(Active)" : "")
+        </span>
+        <span class="sep">|</span>
+        <span class="status-btn" @onclick="OnHostGame" style="color: var(--kcd-gold); font-weight: bold;">
+            HOST GAME
+        </span>
+        <span class="sep">|</span>
+        <span class="status-btn" @onclick="OnReportBug">
+            REPORT BUG
+        </span>
+    </div>
+
+    <div class="status-center">
+        Master: <span class="@(Globals.IsMasterOnline ? "status-online" : "status-offline")">@(Globals.IsMasterOnline ? "Online" : "Offline")</span>
+        <span class="sep">|</span>
+        <span>v @Globals.Version</span>
+    </div>
+
+    <div class="status-right">
+        <span class="status-btn" @onclick="OnToggleSettings">[F10] SETTINGS</span>
+        <span class="status-btn" @onclick="OnRefresh">[F5] REFRESH</span>
+        <span class="status-btn" @onclick="OnExit">[ESC] EXIT</span>
+    </div>
+
+    <div class="legal-footer">
+        Kingdom Come: Deliverance is a trademark of Warhorse Studios.
+        This is a non-commercial fan project.
+    </div>
+</div>
+
+@code {
+	[Parameter] public bool IsFilterActive { get; set; }
+
+    [Parameter] public EventCallback OnToggleFilters { get; set; }
+    [Parameter] public EventCallback OnToggleSettings { get; set; }
+    [Parameter] public EventCallback OnRefresh { get; set; }
+    [Parameter] public EventCallback OnExit { get; set; }
+    [Parameter] public EventCallback OnHostGame { get; set; }
+    [Parameter] public EventCallback OnReportBug { get; set; }
+}

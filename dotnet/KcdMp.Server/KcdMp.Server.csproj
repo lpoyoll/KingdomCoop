@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>KcdMpServer</AssemblyName>
+  </PropertyGroup>
+
+  <!--
+    WO-35: stamp this build with the repo's own VERSION file, the same way
+    KcdMp.Client.csproj and KCDMP_launcher.csproj already do. Without this the
+    relay's AssemblyInformationalVersionAttribute falls back to the SDK's own
+    "1.0.0+git-commit-hash" default, which is what MasterAnnounceService's
+    ReleaseVersion read and published; the relay had simply never had a
+    reason to read its own version before there was a releaseVersion field to
+    put it in. Reads only, never writes VERSION. See docs/VERSIONING.md.
+  -->
+  <PropertyGroup>
+    <VersionFileContent Condition="Exists('$(MSBuildThisFileDirectory)..\..\VERSION')">$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)..\..\VERSION').Trim())</VersionFileContent>
+    <Version Condition="'$(VersionFileContent)' != ''">$(VersionFileContent)</Version>
+    <!-- Otherwise the SDK appends "+<git-commit-hash>" to InformationalVersion,
+         which both looks wrong in the browser and breaks a Major.Minor.Patch
+         comparison outright. -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Microsoft.Extensions.DependencyInjection / .Hosting are supplied by the
+         Microsoft.NET.Sdk.Web framework reference; explicit PackageReferences
+         only pin versions that then have to be kept in step with the TFM. -->
+    <PackageReference Include="Serilog" Version="4.3.1" />
+    <PackageReference Include="Serilog.Extensions.Hosting" Version="10.0.0" />
+    <PackageReference Include="Serilog.Settings.Configuration" Version="10.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
+    <!-- Not used by appsettings.json, which only writes to Console. It is here
+         so the published relay can run from the packaged release folder: that
+         folder is a flat merge of three self-contained publishes, and the
+         launcher brings Serilog.Sinks.File with it for its own logging.
+         Serilog.Settings.Configuration probes every Serilog.*.dll it finds
+         beside the executable, and a self-contained host refuses to load an
+         assembly that is not in that app's own .deps.json, so the relay died
+         at startup with "Could not load Serilog.Sinks.File" purely because a
+         neighbour's DLL was in the folder. Referencing it puts the assembly
+         in KcdMpServer.deps.json and the probe succeeds. Version matches the
+         launcher's so the merge stays one file. -->
+    <PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="appsettings.Development.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\KcdMp.Protocol\KcdMp.Protocol.csproj" />
+    <ProjectReference Include="..\KcdMp.Farkle\KcdMp.Farkle.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="KcdMp.Wire" />
+  </ItemGroup>
+
+</Project>
