@@ -64,6 +64,23 @@ jobs:
           }
           "KINGDOMCOOP_PACK=$($pack.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Rebase verified package guard to upstream 0.17.1
+        shell: pwsh
+        run: |
+          # Upstream 8e2cede changed VERSION and the generated kdcmp.pak only.
+          # The source anchors used by APPLY-v0.4.ps1 are unchanged.
+          $apply = Join-Path $env:KINGDOMCOOP_PACK 'APPLY-v0.4.ps1'
+          $text = [IO.File]::ReadAllText($apply)
+          if (-not $text.Contains('upstream 0.17.0')) {
+            throw 'Expected the verified 0.17.0 package guard before rebasing.'
+          }
+          $text = $text.Replace('0.17.0', '0.17.1')
+          [IO.File]::WriteAllText($apply, $text, [Text.UTF8Encoding]::new($false))
+
+          $metadata = Join-Path $env:KINGDOMCOOP_PACK 'BUILD-METADATA.json'
+          $json = [IO.File]::ReadAllText($metadata).Replace('"base_version": "0.17.0"', '"base_version": "0.17.1"')
+          [IO.File]::WriteAllText($metadata, $json, [Text.UTF8Encoding]::new($false))
+
       - name: Apply all Companion Co-op systems
         shell: pwsh
         run: |
