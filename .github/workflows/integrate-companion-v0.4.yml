@@ -80,11 +80,11 @@ jobs:
           # Windows runner use CRLF. Normalise both sides inside Replace-Once
           # so multi-line anchors remain exact and fail closed on real drift.
           $replaceNeedle = '    $s = Read-Utf8 $p'
-          $replaceNormalised = @'
-    $s = (Read-Utf8 $p).Replace("`r`n","`n")
-    $old = $old.Replace("`r`n","`n")
-    $new = $new.Replace("`r`n","`n")
-'@
+          $replaceNormalised = @(
+            '    $s = (Read-Utf8 $p).Replace("`r`n","`n")'
+            '    $old = $old.Replace("`r`n","`n")'
+            '    $new = $new.Replace("`r`n","`n")'
+          ) -join [Environment]::NewLine
           if (-not $text.Contains($replaceNeedle)) {
             throw 'Could not locate Replace-Once source normalisation point.'
           }
