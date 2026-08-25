@@ -1,0 +1,74 @@
+name: Integrate and build Companion Co-op v0.4
+
+on:
+  push:
+    branches:
+      - companion-coop/v0.4
+    paths:
+      - '.kingdomcoop/KingdomCoop-v0.4-source-overlay.zip'
+      - '.github/workflows/integrate-companion-v0.4.yml'
+
+permissions:
+  contents: write
+
+env:
+  OVERLAY_ZIP: .kingdomcoop/KingdomCoop-v0.4-source-overlay.zip
+
+jobs:
+  integrate-and-build:
+    if: github.event.head_commit.message != 'Integrate Companion Co-op v0.4 source'
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Expand Companion Co-op source package
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:RUNNER_TEMP 'kingdomcoop-v04'
+          if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+          Expand-Archive -Path $env:OVERLAY_ZIP -DestinationPath $dest -Force
+          $pack = Get-ChildItem $dest -Directory | Select-Object -First 1
+          if (-not $pack) { throw 'Source package root not found after extraction.' }
+          "KINGDOMCOOP_PACK=$($pack.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Apply all Companion Co-op systems
+        shell: pwsh
+        run: |
+          & "$env:KINGDOMCOOP_PACK\APPLY-v0.4.ps1" -RepoPath $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Commit integrated source
+        shell: pwsh
+        run: |
+          git config user.name "KingdomCoop CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          if (-not (git diff --cached --quiet)) {
+            git commit -m "Integrate Companion Co-op v0.4 source"
+            git push origin HEAD:companion-coop/v0.4
+          }
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer and direct-install package
+        shell: pwsh
+        run: |
+          & "$env:KINGDOMCOOP_PACK\BUILD-v0.4.ps1" -RepoPath $env:GITHUB_WORKSPACE -SkipApply
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload release artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: KingdomCoop-v0.4-build-output
+          path: |
+            release/*.exe
+            release/*.zip
+            release/KCDMP/**
+          if-no-files-found: warn
