@@ -1,0 +1,66 @@
+name: Bootstrap upstream source
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/bootstrap-upstream.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  import-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout KingdomCoop
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Import exact upstream baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone https://github.com/DeepFriedDepp/kcd2-multiplayer_Reworked.git /tmp/kcdmp-upstream
+          cd /tmp/kcdmp-upstream
+          git checkout 8e2cede52bc946f54992e1d3a62c736adfcebbcc
+          cd "$GITHUB_WORKSPACE"
+          cp /tmp/kcdmp-upstream/README.md UPSTREAM-README.md
+          rsync -a --delete \
+            --exclude '.git/' \
+            --exclude '.github/workflows/bootstrap-upstream.yml' \
+            --exclude 'README.md' \
+            /tmp/kcdmp-upstream/ ./
+          # Restore the workflow if rsync removed the .github directory contents.
+          git checkout -- .github/workflows/bootstrap-upstream.yml
+
+      - name: Record upstream baseline
+        shell: bash
+        run: |
+          cat > UPSTREAM.md <<'EOF'
+          # Upstream baseline
+
+          KingdomCoop is derived from:
+
+          - Repository: `DeepFriedDepp/kcd2-multiplayer_Reworked`
+          - Baseline version: `0.17.1`
+          - Baseline commit: `8e2cede52bc946f54992e1d3a62c736adfcebbcc`
+          - Licence: GPL-3.0
+
+          Upstream copyright and licence notices are retained. KingdomCoop modifications are clearly marked in this repository.
+          EOF
+
+      - name: Commit imported source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "KingdomCoop Bootstrap"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to import."
+            exit 0
+          fi
+          git commit -m "Import upstream 0.17.1 baseline"
+          git push origin HEAD:main
