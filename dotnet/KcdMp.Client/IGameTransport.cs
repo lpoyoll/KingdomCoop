@@ -121,6 +121,10 @@ public interface IGameTransport : IAsyncDisposable
     /// <summary>Unequips one item class from a named ghost soul.</summary>
     Task UnequipItemOnGhostAsync(string ghostSoulName, Guid itemClass, CancellationToken ct = default);
 
+    /// <summary>Equips an already-present ItemClass on the local player.</summary>
+    Task EquipItemOnPlayerAsync(Guid itemClass, CancellationToken ct = default);
+    Task SetPlayerStateAsync(string state, float value, CancellationToken ct = default);
+
     /// <summary>
     /// Reads a named ghost's own Soul.Guid (WO-17 reactive aggro) -- the
     /// identity the native pipe's SetFactionHostile needs, distinct from the

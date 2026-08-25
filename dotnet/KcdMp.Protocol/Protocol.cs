@@ -589,7 +589,7 @@ namespace KcdMp.Wire;
 /// dependencies). Both KcdMp.Client and KcdMp.Server reference it, so there is
 /// exactly one copy of the wire contract to keep in sync with itself.
 /// </summary>
-public static class Protocol
+public static partial class Protocol
 {
     /// <summary>
     /// Protocol version, negotiated in the Handshake.
@@ -601,7 +601,7 @@ public static class Protocol
     /// of that, because a peer that didn't would never have gotten past
     /// Handshake.
     /// </summary>
-    public const byte Version = 6;
+    public const byte Version = 8;
 
     // C→S
     public const byte Handshake      = 0x00;

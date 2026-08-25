@@ -305,6 +305,22 @@ public sealed partial class HttpGameTransport(string gameApiBase, int timeoutMs 
             $"{gameApiBase}/api/rpg/SoulList/SoulsByName/{soul}/EquipmentManager/UnequipItem?itemClassId={itemClass}", ct);
     }
 
+    public async Task EquipItemOnPlayerAsync(Guid itemClass, CancellationToken ct = default)
+    {
+        await _http.GetStringAsync(
+            $"{gameApiBase}/api/rpg/SoulList/PlayerSoul/EquipmentManager/EquipItem?itemClassId={itemClass}", ct);
+    }
+
+    public async Task SetPlayerStateAsync(string state, float value, CancellationToken ct = default)
+    {
+        if (!CompanionStateNames.Allowed.Contains(state))
+            throw new ArgumentOutOfRangeException(nameof(state), state, "State is not on the Companion Co-op allowlist.");
+        string s = Uri.EscapeDataString(state);
+        string v = value.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        await _http.GetStringAsync(
+            $"{gameApiBase}/api/rpg/SoulList/PlayerSoul/SetState?State={s}&Value={v}", ct);
+    }
+
     /// <summary>
     /// Reads a ghost's own Soul.Guid (WO-17). This is NOT the same field as
     /// SharedSoulGuid used elsewhere for cross-client damage matching -- a

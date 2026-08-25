@@ -8,7 +8,7 @@ namespace KcdMp.Server.Features.Tcp;
 /// No lock of its own: <see cref="ClientHandler.GetClients"/> already returns a
 /// snapshot taken under the handler's lock, which is the only shared state here.
 /// </summary>
-public class TcpBroadcastService
+public partial class TcpBroadcastService
 {
     private readonly bool _echo;
     private readonly ClientHandler _clientHandler;

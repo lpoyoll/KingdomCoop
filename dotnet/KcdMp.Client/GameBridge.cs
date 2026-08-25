@@ -520,6 +520,11 @@ public partial class GameBridge(ClientConfig config)
             }
 
             if (ct.IsCancellationRequested) break;
+            if (_sessionEndedByHost)
+            {
+                Console.WriteLine("[companion] Campaign host ended the session. Automatic reconnect suppressed.");
+                break;
+            }
             Console.WriteLine("Reconnecting in 3 s...");
             Console.WriteLine();
             await Task.Delay(3000, ct).ContinueWith(_ => { });
@@ -666,6 +671,8 @@ public partial class GameBridge(ClientConfig config)
             await stream.WriteAsync(pkt, ict);
         }
 
+        _companionSendPacket = SendPacketAsync;
+
         var interactions = new InteractionClient(SendPacketAsync);
         var dice = new DiceClient(SendPacketAsync);
         WireInteractionFeedback(interactions);
@@ -705,6 +712,9 @@ public partial class GameBridge(ClientConfig config)
         }
 
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(appCt);
+        _companionConnectionCts = cts;
+        await StartCompanionSessionAsync(appCt);
+        await StartPartySystemsAsync(appCt);
 
         // Start background tasks
         // Outbound combat: the DLL notices a nearby NPC lose health and we put
@@ -936,7 +946,13 @@ public partial class GameBridge(ClientConfig config)
                     // Both are no-ops on a v1 emit line, where Health/IsDead
                     // are null -- "unknown, leave it alone".
                     await SendPlayerStateIfChangedAsync(stream, st, cts.Token);
-                    await SendDeathIfNewAsync(stream, st, cts.Token);
+                    await CompanionPartyTickAsync(st, cts.Token);
+                    // In co-op, a soft-down replaces ordinary death whenever
+                    // we caught the lethal edge in time. The upstream death
+                    // packet remains as fallback for an engine one-shot that
+                    // crosses straight to IsDead before the sampler sees it.
+                    if (_localPartyState != Protocol.PartyDowned)
+                        await SendDeathIfNewAsync(stream, st, cts.Token);
 
                     // Update voice local position and recalculate all player volumes.
                     if (_voice != null)
@@ -970,6 +986,8 @@ public partial class GameBridge(ClientConfig config)
         }
         finally
         {
+            try { await StopPartySystemsAsync(); } catch { }
+            try { await StopCompanionSessionAsync(); } catch (Exception ex) { Console.WriteLine($"[companion] session cleanup failed: {ex.Message}"); }
             cts.Cancel();
             try { await receiveTask;     } catch { }
             try { await pingTask;        } catch { }
@@ -993,6 +1011,8 @@ public partial class GameBridge(ClientConfig config)
             _sendWeather = null;
             _sendItemDrop = null;
             _sendItemClaim = null;
+            _companionSendPacket = null;
+            _companionConnectionCts = null;
             _myOpenDrops.Clear();
             _sessionWeatherProfile = null;
             _lastAppliedWeatherProfile = null;
@@ -2675,6 +2695,10 @@ public partial class GameBridge(ClientConfig config)
                         await ExecLuaAsync($"if KCD2MP_GhostCombat then KCD2MP_GhostCombat(\"{ceSource}\",{ceEvent}) end");
                     }
                 }
+                else if (await TryHandleCompanionPacketAsync(type, payload, ct))
+                {
+                    // Companion Co-op packet consumed by the v0.3 partial.
+                }
                 else if (type == Protocol.AppearanceDown && payloadLen >= 2)
                 {
                     // Appearance: [sourceGhostId:1][itemCount:1][itemClass:16]*itemCount
@@ -2766,6 +2790,8 @@ public partial class GameBridge(ClientConfig config)
     /// </summary>
     private void OnGameEvent(string name, string arg)
     {
+        if (HandleCompanionGameEvent(name, arg)) return;
+
         // WO-38: the world-clock reading is consumed regardless of the
         // interaction layer's state -- it feeds the time-skip sync, which has
         // no dependency on sessions being up.

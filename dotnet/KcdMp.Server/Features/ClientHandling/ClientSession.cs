@@ -13,7 +13,7 @@ namespace KcdMp.Server.Features.ClientHandling;
 ///
 /// See <see cref="Protocol"/> for the framing and packet layouts.
 /// </summary>
-public class ClientSession
+public partial class ClientSession
 {
     private static int _idCounter;
 
@@ -127,6 +127,9 @@ public class ClientSession
                 await ReadExactAsync(header);
                 int type = header[0];
                 int payloadLen = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(1));
+
+                if (await TryHandleCompanionPacketAsync(type, payloadLen))
+                    continue;
 
                 if (type == Protocol.Ping && payloadLen == 8)
                 {

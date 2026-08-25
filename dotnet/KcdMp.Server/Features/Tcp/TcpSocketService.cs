@@ -76,6 +76,7 @@ public class TcpSocketService : BackgroundService
 					}
 
 					_clientHandler.RemoveClient(client);
+					bool companionHostLeft = _clientHandler.CompanionClientRemoved(client);
 
 					// WO-38: a sleeper who disconnects mid-skip must not leave the
 					// session's one active-skip slot claimed until the timeout.
@@ -93,6 +94,12 @@ public class TcpSocketService : BackgroundService
 						client.Name ?? $"id={client.Id}", _clientHandler.ClientCount);
 					if (client.IsReady)
 						_broadcastService.BroadcastDisconnect(client);
+
+					if (companionHostLeft)
+					{
+						_logger.Information("[companion] Henry/campaign host disconnected; ending companion session without authority migration.");
+						_broadcastService.BroadcastCompanionHostEnded();
+					}
 
 					// WO-28: losing a client can move NPC→player damage
 					// authority -- it does whenever the holder is the one who

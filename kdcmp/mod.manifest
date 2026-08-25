@@ -1,10 +1,10 @@
 <kcd_mod>
     <info>
-        <name>KCD2 Multiplayer</name>
+        <name>KCD2 Companion Co-op</name>
         <modid>kdcmp</modid>
-        <description>Multiplayer sync mod</description>
-        <author>Your</author>
-        <version>0.3</version>
+        <description>Henry-led campaign co-op with persistent player companions and canonical shared loot</description>
+        <author>Companion Co-op contributors</author>
+        <version>0.4.0</version>
         <created_on>2026-02-15</created_on>
     </info>
 </kcd_mod>

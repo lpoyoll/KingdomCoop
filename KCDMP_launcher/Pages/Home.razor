@@ -1,4 +1,4 @@
-﻿@page "/"
+@page "/"
 @using KCDMP_launcher.Components
 @using KCDMP_launcher.Components.Modals
 @using KCDMP_launcher.Models
@@ -6,78 +6,88 @@
 @using System.Diagnostics
 @using System.Text.Json
 
-<FilterSidebar  IsOpen="@isFilterOpen"
-                @bind-FilterName="filterName"
-                @bind-FilterMap="filterMap"
-                @bind-FilterMinPlayers="filterMinPlayers"
-                @bind-FilterMaxPlayers="filterMaxPlayers"
-                @bind-FilterMinPing="filterMinPing"
-                @bind-FilterMaxPing="filterMaxPing"
-                @bind-FilterShowFavorites="filterShowFavorites"
-                @bind-FilterHideUnreachable="filterHideUnreachable"
-                OnResetFilters="@ResetFilters"
-                AvailableMaps="@availableMaps" 
-/>
+<FilterSidebar IsOpen="@isFilterOpen"
+               @bind-FilterName="filterName"
+               @bind-FilterMap="filterMap"
+               @bind-FilterMinPlayers="filterMinPlayers"
+               @bind-FilterMaxPlayers="filterMaxPlayers"
+               @bind-FilterMinPing="filterMinPing"
+               @bind-FilterMaxPing="filterMaxPing"
+               @bind-FilterShowFavorites="filterShowFavorites"
+               @bind-FilterHideUnreachable="filterHideUnreachable"
+               OnResetFilters="@ResetFilters"
+               AvailableMaps="@availableMaps" />
 
-<div class="content-wrapper">
+<div class="content-wrapper companion-home">
+    <div class="game-title">KCD2 Companion Co-op</div>
 
-    <div class="game-title">
-        Kingdom Come: Multiplayer
+    <div class="companion-hero">
+        <div class="companion-tagline">
+            Henry owns the campaign. Friends join as persistent companions.
+        </div>
+
+        <div class="companion-actions">
+            <button class="kcd-btn primary companion-main-btn" @onclick="OpenHostModal">
+                HOST CAMPAIGN
+            </button>
+            <button class="kcd-btn primary companion-main-btn" @onclick="OpenAddModal">
+                JOIN COMPANION
+            </button>
+        </div>
+
+        <div class="companion-note">
+            Networking, relay and injection stay underneath. Advanced server tools are below for diagnostics.
+        </div>
     </div>
 
-    <div class="main-window @(isFilterOpen ? "shifted" : "")">
-
-        <ServerList @ref="serverListComponent"
-                    Servers="@filteredAndSortedServers"
-                    Favorites="@favoriteIps"
-                    IsLoading="@isLoading"
-                    CurrentSortColumn="@currentSortColumn"
-                    IsAscending="@isAscending"
-                    OnSort="@SortTable"
-                    OnLaunch="@LaunchGame"
-                    OnToggleFavorite="@ToggleFavorite"
-                    OnAddClick="@OpenAddModal"
-                    OnEditClick="@OpenEditModal"
-                    OnRemoveClick="@RemoveCustomServer"
-                    OnError="@DisplayError"
-        />
-
-    </div>
-
+    <details class="companion-advanced">
+        <summary>Advanced / Servers</summary>
+        <div class="main-window @(isFilterOpen ? "shifted" : "")">
+            <ServerList @ref="serverListComponent"
+                        Servers="@filteredAndSortedServers"
+                        Favorites="@favoriteIps"
+                        IsLoading="@isLoading"
+                        CurrentSortColumn="@currentSortColumn"
+                        IsAscending="@isAscending"
+                        OnSort="@SortTable"
+                        OnLaunch="@LaunchGame"
+                        OnToggleFavorite="@ToggleFavorite"
+                        OnAddClick="@OpenAddModal"
+                        OnEditClick="@OpenEditModal"
+                        OnRemoveClick="@RemoveCustomServer"
+                        OnError="@DisplayError" />
+        </div>
+    </details>
 </div>
 
-<StatusBar  IsFilterActive="@filterShowFavorites"
-            OnToggleFilters="@ToggleFiltersJS"
-            OnToggleSettings="@ToggleSettingsJS"
-            OnRefresh="@RefreshApp"
-            OnExit="@ExitApp"
-            OnHostGame="@OpenHostModal"
-            OnReportBug="@(() => showReportBug = true)"
-/>
+<StatusBar IsFilterActive="@filterShowFavorites"
+           OnToggleFilters="@ToggleFiltersJS"
+           OnToggleSettings="@ToggleSettingsJS"
+           OnRefresh="@RefreshApp"
+           OnExit="@ExitApp"
+           OnHostGame="@OpenHostModal"
+           OnReportBug="@(() => showReportBug = true)" />
 
 @if (launchStage != LaunchStage.Idle)
 {
     <div class="modal-overlay">
-        <div class="modal-box" @onclick:stopPropagation="true" style="max-width: 480px;">
+        <div class="modal-box" @onclick:stopPropagation="true" style="max-width:480px;">
             <div class="modal-frame-top modal-frame-bg"></div>
-            <div class="modal-content" style="text-align: center;">
-                <div class="modal-title">
-                    @(launchStage switch
-                    {
-                        LaunchStage.WaitingForConnect => "READY TO CONNECT",
-                        LaunchStage.Injecting => "INJECTING...",
-                        LaunchStage.Verifying => "VERIFYING...",
-                        LaunchStage.Connected => "CONNECTED",
-                        LaunchStage.Failed => "CONNECT FAILED",
-                        _ => ""
-                    })
-                </div>
-                <p style="margin: 15px 0;">@launchStatusMessage</p>
-
+            <div class="modal-content" style="text-align:center;">
+                <div class="modal-title">@(launchStage switch
+                {
+                    LaunchStage.WaitingForConnect => "READY TO JOIN",
+                    LaunchStage.Injecting => "STARTING COMPANION CO-OP...",
+                    LaunchStage.Verifying => "VERIFYING...",
+                    LaunchStage.Connected => "CONNECTED",
+                    LaunchStage.Failed => "CONNECT FAILED",
+                    _ => ""
+                })</div>
+                <p style="margin:15px 0;">@launchStatusMessage</p>
                 <div class="modal-actions">
                     @if (launchStage == LaunchStage.WaitingForConnect)
                     {
-                        <button class="kcd-btn primary" @onclick="ConnectToGame">CONNECT</button>
+                        <button class="kcd-btn primary" @onclick="ConnectToGame">JOIN NOW</button>
                         <button class="kcd-btn" @onclick="CancelPendingConnect">CANCEL</button>
                     }
                     else if (launchStage == LaunchStage.Connected || launchStage == LaunchStage.Failed)
@@ -91,37 +101,18 @@
     </div>
 }
 
-<HostInfoModal  IsVisible="@showHostInfo"
-                Port="@settings.HostPort"
-                Addresses="@hostLanAddresses"
-                ErrorMessage="@hostErrorMessage"
-                RelayRunning="@(hostedRelayProcess != null && !hostedRelayProcess.HasExited)"
-                OnLaunchAsHost="@LaunchAsHost"
-                OnStopRelay="@(() => { StopHostedRelay(); showHostInfo = false; })"
-                OnClose="@(() => showHostInfo = false)" />
+<HostInfoModal IsVisible="@showHostInfo"
+               Port="@settings.HostPort"
+               Addresses="@hostLanAddresses"
+               ErrorMessage="@hostErrorMessage"
+               RelayRunning="@(hostedRelayProcess != null && !hostedRelayProcess.HasExited)"
+               OnLaunchAsHost="@LaunchAsHost"
+               OnStopRelay="@(() => { StopHostedRelay(); showHostInfo = false; })"
+               OnClose="@(() => showHostInfo = false)" />
 
-<ExitModal  IsVisible="@showExitConfirm"
-            OnConfirm="@ConfirmExit"
-            OnClose="@(() => showExitConfirm = false)" />
-
-<SettingsModal  IsVisible="@showSettings" 
-                Settings="@settings" 
-                OnSave="@SaveSettings" 
-                OnClose="@(() => showSettings = false)" />
-
-<AddServerModal IsVisible="@showAddServer"
-                ServerToEdit="@serverToEdit"
-                OnAdd="@AddCustomServer"
-                OnEdit="@HandleServerUpdate"
-                OnClose="@(() => showAddServer = false)" />
-
-<ReportBugModal IsVisible="@showReportBug"
-                GameRoot="@LogBundleGameRoot"
-                AgentDirectory="@LogBundleAgentDirectory"
-                OnClose="@(() => showReportBug = false)" />
-
-<VersionMismatchModal   IsVisible="@showVersionMismatch"
-                        Message="@versionMismatchMessage"
-                        OnClose="@(() => showVersionMismatch = false)" />
-
+<ExitModal IsVisible="@showExitConfirm" OnConfirm="@ConfirmExit" OnClose="@(() => showExitConfirm=false)" />
+<SettingsModal IsVisible="@showSettings" Settings="@settings" OnSave="@SaveSettings" OnClose="@(() => showSettings=false)" />
+<AddServerModal IsVisible="@showAddServer" ServerToEdit="@serverToEdit" OnAdd="@AddCustomServer" OnEdit="@HandleServerUpdate" OnClose="@(() => showAddServer=false)" />
+<ReportBugModal IsVisible="@showReportBug" GameRoot="@LogBundleGameRoot" AgentDirectory="@LogBundleAgentDirectory" OnClose="@(() => showReportBug=false)" />
+<VersionMismatchModal IsVisible="@showVersionMismatch" Message="@versionMismatchMessage" OnClose="@(() => showVersionMismatch=false)" />
 <ErrorModal />

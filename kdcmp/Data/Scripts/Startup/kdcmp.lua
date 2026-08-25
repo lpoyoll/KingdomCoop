@@ -7106,5 +7106,799 @@ if not ok2 then
     System.LogAlways("[KCD2-MP] Hook error: " .. tostring(err2))
 end
 
+-- ============================================================================
+-- Companion Co-op v0.4 inventory foundation
+-- Persistent guest inventory + host-authoritative corpse/chest loot.
+-- Appended to the upstream 0.17.0 startup script by APPLY-v0.3.ps1.
+-- ============================================================================
 
+KCD2MP.companionCoop = KCD2MP.companionCoop or {
+    isHost = false,
+    snapshotSeq = 0,
+    lootSources = {},
+    lootIncoming = {},
+    lootPendingTakes = {},
+    lootPlayerWuids = {},
+    lootRunning = false,
+    lootAliveAt = nil,
+    lootScanMs = 750,
+    lootRadius = 8,
+    lootHeartbeat = 10,
+}
 
+function KCD2MP_CompanionSetHost(v)
+    KCD2MP.companionCoop.isHost = v and true or false
+    -- Companion play should be recognised by nearby combat by default.
+    if not KCD2MP.companionCoop.isHost then
+        KCD2MP.aggroEnabled = true
+    end
+    mp_log("COMPANION role=" .. (KCD2MP.companionCoop.isHost and "HOST" or "GUEST"))
+    if not KCD2MP.companionCoop.lootRunning then
+        KCD2MP_StartCompanionLoot()
+    end
+end
+
+local function cc_item_health(it)
+    local hp = 1
+    if not it then return hp end
+    pcall(function()
+        if type(it.GetHealth) == "function" then
+            local v = it:GetHealth()
+            if type(v) == "number" then hp = v end
+        elseif type(it.health) == "number" then
+            hp = it.health
+        elseif type(it.Health) == "number" then
+            hp = it.Health
+        end
+    end)
+    return hp
+end
+
+local function cc_inventory_rows(who)
+    local rows = {}
+    if not (who and who.inventory) then return rows end
+    pcall(function()
+        local t = who.inventory:GetInventoryTable() or {}
+        for i = 1, #t do
+            local wuid = t[i]
+            local it = ItemManager.GetItem(wuid)
+            if it and it.class then
+                table.insert(rows, {
+                    wuid = tostring(wuid),
+                    cls = tostring(it.class),
+                    amount = tonumber(it.amount) or 1,
+                    health = cc_item_health(it),
+                })
+            end
+        end
+    end)
+    return rows
+end
+
+function KCD2MP_CompanionSnapshot(tag)
+    tag = tostring(tag or "")
+    if tag == "" or not player then return false end
+
+    local money, health, stamina = 0, -1, -1
+    pcall(function() money = player.inventory:GetMoney() or 0 end)
+    pcall(function() health = player.actor:GetHealth() or -1 end)
+    pcall(function()
+        local v = player.soul:GetState("stamina")
+        if type(v) == "number" then stamina = v end
+    end)
+
+    KCD2MP_EmitEvent("comp_profile_begin",
+        string.format("%s %.4f %.4f %.4f", tag, money, health, stamina))
+
+    for _, r in ipairs(cc_inventory_rows(player)) do
+        KCD2MP_EmitEvent("comp_profile_item",
+            string.format("%s %s %d %.6f", tag, r.cls, r.amount, r.health))
+    end
+
+    KCD2MP_EmitEvent("comp_profile_end", tag)
+    return true
+end
+
+function KCD2MP_CompanionClearInventory()
+    if not (player and player.inventory) then return false end
+    local rows = cc_inventory_rows(player)
+    for _, r in ipairs(rows) do
+        pcall(function() ItemManager.RemoveItem(r.wuid) end)
+    end
+    return true
+end
+
+function KCD2MP_CompanionAddItem(cls, health, amount)
+    if not (player and player.inventory) then return false end
+    cls = tostring(cls or "")
+    if not cls:match("^[0-9a-fA-F%-]+$") then return false end
+    health = tonumber(health) or 1
+    amount = math.max(1, math.floor(tonumber(amount) or 1))
+    local ok = pcall(function()
+        player.inventory:CreateItem(cls, health, amount)
+    end)
+    return ok
+end
+
+function KCD2MP_CompanionSetMoney(target)
+    if not (player and player.inventory) then return false end
+    target = math.max(0, tonumber(target) or 0)
+    local current = 0
+    pcall(function() current = player.inventory:GetMoney() or 0 end)
+    local delta = target - current
+    if math.abs(delta) < 0.001 then return true end
+    if delta > 0 then
+        return pcall(function() ItemUtils.AddMoneyToInventory(player, delta) end)
+    else
+        return pcall(function() player.inventory:RemoveMoney(-delta) end)
+    end
+end
+
+local function cc_is_ghost_entity(e)
+    for _, g in pairs(KCD2MP.ghosts or {}) do
+        if g and g.entity == e then return true end
+    end
+    return false
+end
+
+local function cc_source_allowed(e)
+    if not e or e == player or not e.inventory or cc_is_ghost_entity(e) then return false end
+    local name = nil
+    pcall(function() name = e:GetName() end)
+    name = tostring(name or "")
+    if not name:match("^[A-Za-z0-9_]+$") or #name > 64 then return false end
+
+    -- Living actors are private gameplay state. Corpses/unconscious bodies are
+    -- loot sources; non-actor inventory entities (chests/cupboards) are allowed.
+    if e.actor then
+        local dead, ko = false, false
+        pcall(function() dead = e.actor:IsDead() and true or false end)
+        pcall(function() ko = e.actor:IsUnconscious() and true or false end)
+        if not dead and not ko then return false end
+    end
+    return true, name
+end
+
+local function cc_rows_hash(rows)
+    local a = {}
+    for _, r in ipairs(rows) do
+        table.insert(a, string.format("%s:%d:%.3f", r.cls, r.amount, r.health))
+    end
+    table.sort(a)
+    return table.concat(a, "|")
+end
+
+local function cc_counts(rows)
+    local c = {}
+    for _, r in ipairs(rows) do
+        c[r.cls] = (c[r.cls] or 0) + r.amount
+    end
+    return c
+end
+
+local function cc_player_wuid_map()
+    local m = {}
+    for _, r in ipairs(cc_inventory_rows(player)) do
+        m[r.wuid] = r
+    end
+    return m
+end
+
+local function cc_publish_source(e, name, now)
+    local rows = cc_inventory_rows(e)
+    local hash = cc_rows_hash(rows)
+    local s = KCD2MP.companionCoop.lootSources[name]
+    local due = not s or s.hash ~= hash or (now - (s.sentAt or 0)) >= KCD2MP.companionCoop.lootHeartbeat
+    if not due then return end
+
+    KCD2MP.companionCoop.snapshotSeq = (KCD2MP.companionCoop.snapshotSeq % 16000000) + 1
+    local snap = KCD2MP.companionCoop.snapshotSeq
+    KCD2MP_EmitEvent("loot_manifest_begin", string.format("%d %s", snap, name))
+    for _, r in ipairs(rows) do
+        KCD2MP_EmitEvent("loot_manifest_item",
+            string.format("%d %s %s %d %.6f", snap, name, r.cls, r.amount, r.health))
+    end
+    KCD2MP_EmitEvent("loot_manifest_end", string.format("%d %s", snap, name))
+
+    KCD2MP.companionCoop.lootSources[name] = {
+        entity = e,
+        hash = hash,
+        sentAt = now,
+        rows = rows,
+        counts = cc_counts(rows),
+        snapshot = snap,
+    }
+end
+
+function KCD2MP_LootManifestBegin(snapshot, source)
+    snapshot, source = tostring(snapshot), tostring(source)
+    KCD2MP.companionCoop.lootIncoming[source] = {
+        snapshot = snapshot, rows = {}
+    }
+end
+
+function KCD2MP_LootManifestItem(snapshot, source, cls, amount, health)
+    snapshot, source = tostring(snapshot), tostring(source)
+    local m = KCD2MP.companionCoop.lootIncoming[source]
+    if not m or m.snapshot ~= snapshot then return end
+    table.insert(m.rows, {
+        cls = tostring(cls),
+        amount = tonumber(amount) or 1,
+        health = tonumber(health) or 1,
+    })
+end
+
+local function cc_remove_amount(who, cls, amount, preferred)
+    if not (who and who.inventory) then return false end
+    amount = math.max(1, math.floor(tonumber(amount) or 1))
+    local rows = cc_inventory_rows(who)
+
+    if preferred and preferred ~= "0" then
+        for _, r in ipairs(rows) do
+            if r.wuid == tostring(preferred) and r.cls == cls then
+                pcall(function() ItemManager.RemoveItem(r.wuid) end)
+                local remain = r.amount - amount
+                if remain > 0 then
+                    pcall(function() who.inventory:CreateItem(r.cls, r.health, remain) end)
+                end
+                return true
+            end
+        end
+    end
+
+    local left = amount
+    for _, r in ipairs(rows) do
+        if left <= 0 then break end
+        if r.cls == cls then
+            pcall(function() ItemManager.RemoveItem(r.wuid) end)
+            if r.amount > left then
+                pcall(function() who.inventory:CreateItem(r.cls, r.health, r.amount - left) end)
+                left = 0
+            else
+                left = left - r.amount
+            end
+        end
+    end
+    return left <= 0
+end
+
+local function cc_reconcile_source(source, rows)
+    local e = System.GetEntityByName(source)
+    if not (e and e.inventory) then return end
+
+    -- The host is already canonical. Only guests overwrite their local copy.
+    if KCD2MP.companionCoop.isHost then return end
+
+    for _, r in ipairs(cc_inventory_rows(e)) do
+        pcall(function() ItemManager.RemoveItem(r.wuid) end)
+    end
+    for _, r in ipairs(rows) do
+        pcall(function() e.inventory:CreateItem(r.cls, r.health, r.amount) end)
+    end
+end
+
+function KCD2MP_LootManifestEnd(snapshot, source)
+    snapshot, source = tostring(snapshot), tostring(source)
+    local m = KCD2MP.companionCoop.lootIncoming[source]
+    if not m or m.snapshot ~= snapshot then return end
+    KCD2MP.companionCoop.lootIncoming[source] = nil
+
+    cc_reconcile_source(source, m.rows)
+    local e = System.GetEntityByName(source)
+    KCD2MP.companionCoop.lootSources[source] = {
+        entity = e,
+        hash = cc_rows_hash(m.rows),
+        sentAt = os.clock(),
+        rows = m.rows,
+        counts = cc_counts(m.rows),
+        snapshot = tonumber(snapshot),
+    }
+end
+
+local function cc_detect_take(pp)
+    local nowPlayer = cc_player_wuid_map()
+    local oldPlayer = KCD2MP.companionCoop.lootPlayerWuids or {}
+
+    for source, s in pairs(KCD2MP.companionCoop.lootSources) do
+        local e = s.entity
+        if not e then e = System.GetEntityByName(source); s.entity = e end
+        if e and e.inventory then
+            local ep = nil
+            pcall(function() ep = e:GetWorldPos() end)
+            if ep then
+                local dx, dy = ep.x - pp.x, ep.y - pp.y
+                if dx * dx + dy * dy <= KCD2MP.companionCoop.lootRadius * KCD2MP.companionCoop.lootRadius then
+                    local rows = cc_inventory_rows(e)
+                    local counts = cc_counts(rows)
+                    local prev = s.counts or counts
+
+                    for cls, before in pairs(prev) do
+                        local after = counts[cls] or 0
+                        local lost = before - after
+                        if lost > 0 then
+                            -- Prefer a newly-created player WUID of the same class.
+                            local picked = nil
+                            for wuid, r in pairs(nowPlayer) do
+                                if not oldPlayer[wuid] and r.cls == cls then
+                                    picked = r
+                                    break
+                                end
+                            end
+                            local hp = picked and picked.health or 1
+                            local wuid = picked and picked.wuid or "0"
+                            KCD2MP_EmitEvent("loot_take",
+                                string.format("%s %s %d %.6f %s",
+                                    source, cls, lost, hp, wuid))
+                        end
+                    end
+
+                    s.rows = rows
+                    s.counts = counts
+                    s.hash = cc_rows_hash(rows)
+                end
+            end
+        end
+    end
+
+    KCD2MP.companionCoop.lootPlayerWuids = nowPlayer
+end
+
+function KCD2MP_LootTakeRegistered(takeId, source, cls, amount, health, wuid)
+    KCD2MP.companionCoop.lootPendingTakes[tostring(takeId)] = {
+        source = tostring(source),
+        cls = tostring(cls),
+        amount = tonumber(amount) or 1,
+        health = tonumber(health) or 1,
+        wuid = tostring(wuid or "0"),
+    }
+end
+
+function KCD2MP_LootTakeResolved(takeId, accepted, isMine, source, cls, amount, health)
+    local key = tostring(takeId)
+    source, cls = tostring(source), tostring(cls)
+    amount = tonumber(amount) or 1
+    health = tonumber(health) or 1
+    local p = KCD2MP.companionCoop.lootPendingTakes[key]
+
+    if accepted then
+        if not isMine then
+            local e = System.GetEntityByName(source)
+            if e then cc_remove_amount(e, cls, amount, nil) end
+        end
+        if isMine then
+            KCD2MP_ShowInteractionMsg("Loot acquired")
+        end
+    else
+        if isMine and p then
+            -- We locally gained it, but the relay says somebody else already
+            -- consumed the canonical quantity. Roll back the exact WUID when
+            -- possible, then restore the source copy.
+            cc_remove_amount(player, cls, amount, p.wuid)
+            local e = System.GetEntityByName(source)
+            if e and e.inventory then
+                pcall(function() e.inventory:CreateItem(cls, health, amount) end)
+            end
+            KCD2MP_ShowInteractionMsg("Someone else took that item")
+        end
+    end
+
+    if isMine then
+        KCD2MP.companionCoop.lootPendingTakes[key] = nil
+    end
+
+    local s = KCD2MP.companionCoop.lootSources[source]
+    if s then
+        local e = System.GetEntityByName(source)
+        if e and e.inventory then
+            local rows = cc_inventory_rows(e)
+            s.rows, s.counts, s.hash = rows, cc_counts(rows), cc_rows_hash(rows)
+        end
+    end
+end
+
+function KCD2MP_CompanionLootTick()
+    if not KCD2MP.companionCoop.lootRunning then return end
+    Script.SetTimer(KCD2MP.companionCoop.lootScanMs, KCD2MP_CompanionLootTick)
+    KCD2MP.companionCoop.lootAliveAt = os.clock()
+    if not player then return end
+
+    local pp = nil
+    pcall(function() pp = player:GetWorldPos() end)
+    if not pp then return end
+
+    if KCD2MP.companionCoop.isHost then
+        local ents = System.GetEntitiesInSphere(pp, KCD2MP.companionCoop.lootRadius) or {}
+        local now = os.clock()
+        for _, e in ipairs(ents) do
+            local ok, name = cc_source_allowed(e)
+            if ok then pcall(cc_publish_source, e, name, now) end
+        end
+    end
+
+    pcall(cc_detect_take, pp)
+end
+
+function KCD2MP_StartCompanionLoot()
+    if KCD2MP.companionCoop.lootRunning
+       and KCD2MP.companionCoop.lootAliveAt
+       and (os.clock() - KCD2MP.companionCoop.lootAliveAt) < 3 then
+        return
+    end
+    KCD2MP.companionCoop.lootRunning = true
+    KCD2MP.companionCoop.lootAliveAt = os.clock()
+    KCD2MP.companionCoop.lootPlayerWuids = cc_player_wuid_map()
+    Script.SetTimer(KCD2MP.companionCoop.lootScanMs, KCD2MP_CompanionLootTick)
+    mp_log("COMPANION loot sync tick started")
+end
+
+KCD2MP_StartCompanionLoot()
+
+-- ============================================================================
+-- Companion Co-op v0.4 full-feature extension
+-- Systems: transitions, down/revive/wipe, dialogue spectator, quest safety UI,
+-- per-player crime signalling, persistent identity/progression, trade,
+-- map/distance/catch-up/ping.
+-- ============================================================================
+
+KCD2MP.cc = KCD2MP.cc or {
+    hostId = 0, isHost = false, localDowned = false, downAnchor = nil,
+    party = {}, identities = {}, spectator = false, dialogLast = false,
+    pings = {}, trade = { session=0, peer=0, applied={} },
+}
+
+function KCD2MP_CompanionSetHost(v, hostId)
+    KCD2MP.cc.isHost = v and true or false
+    KCD2MP.cc.hostId = tonumber(hostId) or 0
+    KCD2MP.companionCoop.isHost = KCD2MP.cc.isHost
+    if not KCD2MP.cc.isHost then KCD2MP.aggroEnabled = true end
+    if KCD2MP_EnableNpcSync then pcall(function() KCD2MP_EnableNpcSync("on") end) end
+    mp_log("COMPANION role=" .. (KCD2MP.cc.isHost and "HOST" or "GUEST")
+        .. " hostId=" .. tostring(KCD2MP.cc.hostId))
+end
+
+-- 2. World transitions -------------------------------------------------------
+
+function KCD2MP_CompanionTransition(kind, x, y, z, rot)
+    if KCD2MP.cc.isHost or not player then return false end
+    local inCombat = false
+    pcall(function() inCombat = player.soul:IsInCombatDanger() and true or false end)
+    -- Automatic story/fast-travel transitions must win even if the guest's
+    -- local simulation still thinks combat is active. Manual catch-up checks
+    -- combat separately before it calls this.
+    pcall(function() player:SetWorldPos({x=tonumber(x),y=tonumber(y),z=tonumber(z)}) end)
+    pcall(function() player:SetWorldAngles({x=0,y=0,z=tonumber(rot) or 0}) end)
+    KCD2MP_ShowInteractionMsg(kind == 3 and "Caught up to Henry" or "Rejoined Henry")
+    return true
+end
+
+function KCD2MP_CatchUpToHenry(threshold)
+    if KCD2MP.cc.isHost or not player then return false end
+    local host = KCD2MP.ghosts[tostring(KCD2MP.cc.hostId)]
+    if not (host and host.entity) then
+        KCD2MP_ShowInteractionMsg("Henry is not in this area")
+        return false
+    end
+    local danger = false
+    pcall(function() danger = player.soul:IsInCombatDanger() and true or false end)
+    if danger then
+        KCD2MP_ShowInteractionMsg("You cannot catch up during combat")
+        return false
+    end
+    local pp, hp = player:GetWorldPos(), host.entity:GetWorldPos()
+    if not (pp and hp) then return false end
+    local dx,dy,dz=hp.x-pp.x,hp.y-pp.y,hp.z-pp.z
+    local dist=math.sqrt(dx*dx+dy*dy+dz*dz)
+    threshold=tonumber(threshold) or 250
+    if dist < threshold then
+        KCD2MP_ShowInteractionMsg(string.format("Henry is only %.0fm away",dist))
+        return false
+    end
+    return KCD2MP_CompanionTransition(3,hp.x+1.5,hp.y,hp.z,0)
+end
+
+-- 3. Party down / revive -----------------------------------------------------
+
+function KCD2MP_SetLocalDowned(v)
+    KCD2MP.cc.localDowned = v and true or false
+    if KCD2MP.cc.localDowned and player then
+        pcall(function() KCD2MP.cc.downAnchor = player:GetWorldPos() end)
+        KCD2MP_ShowInteractionMsg("DOWNED - another player can revive you")
+    else
+        KCD2MP.cc.downAnchor = nil
+        KCD2MP_ShowInteractionMsg("Revived")
+    end
+end
+
+function KCD2MP_PartyState(id, state)
+    KCD2MP.cc.party[tostring(id)] = tonumber(state) or 0
+end
+
+function KCD2MP_ReviveNearest()
+    if KCD2MP.cc.localDowned then return false end
+    if not player then return false end
+    local pp=player:GetWorldPos()
+    local best,bestD=nil,2.75
+    for id,state in pairs(KCD2MP.cc.party) do
+        if state == 1 then
+            local g=KCD2MP.ghosts[id]
+            if g and g.entity then
+                local gp=g.entity:GetWorldPos()
+                local dx,dy,dz=gp.x-pp.x,gp.y-pp.y,gp.z-pp.z
+                local d=math.sqrt(dx*dx+dy*dy+dz*dz)
+                if d < bestD then best,bestD=id,d end
+            end
+        end
+    end
+    if not best then
+        KCD2MP_ShowInteractionMsg("No downed companion close enough")
+        return false
+    end
+    KCD2MP_EmitEvent("revive",best)
+    KCD2MP_ShowInteractionMsg("Reviving...")
+    return true
+end
+
+function KCD2MP_DownedTick()
+    Script.SetTimer(100,KCD2MP_DownedTick)
+    if KCD2MP.cc.localDowned and player and KCD2MP.cc.downAnchor then
+        -- The current input hook cannot consume KCD2 input because upstream
+        -- calls the original handler first. Pinning is the safe fallback.
+        pcall(function() player:SetWorldPos(KCD2MP.cc.downAnchor) end)
+    end
+end
+Script.SetTimer(100,KCD2MP_DownedTick)
+
+function KCD2MP_PartyWipeHost()
+    KCD2MP_ShowInteractionMsg("PARTY DEFEATED - reload Henry's save")
+    pcall(function()
+        UIAction.CallFunction("hud",-1,"ShowTutorial",
+            "<b>Party defeated</b><br/>Reload Henry's campaign save. Your companions remain connected.")
+    end)
+end
+
+function KCD2MP_PartyWipeGuest()
+    KCD2MP.cc.localDowned=true
+    pcall(function()
+        UIAction.CallFunction("hud",-1,"ShowTutorial",
+            "<b>Party defeated</b><br/>Henry is reloading the campaign. Stay connected.")
+    end)
+end
+
+function KCD2MP_PartyResume()
+    KCD2MP.cc.localDowned=false
+    KCD2MP.cc.downAnchor=nil
+    pcall(function() UIAction.CallFunction("hud",-1,"HideTutorial") end)
+    KCD2MP_ShowInteractionMsg("Party restored")
+end
+
+-- 5. Dialogue spectator ------------------------------------------------------
+
+function KCD2MP_ReportDialogue()
+    if not (player and player.human) then return end
+    local inDialog=false
+    pcall(function() inDialog=player.human:IsInDialog() and true or false end)
+    if inDialog ~= KCD2MP.cc.dialogLast then
+        KCD2MP.cc.dialogLast=inDialog
+        KCD2MP_EmitEvent("dialog_state",inDialog and "1" or "0")
+    end
+end
+
+function KCD2MP_DialogueSpectator(active,label)
+    KCD2MP.cc.spectator=active and true or false
+    if KCD2MP.cc.spectator then
+        local text=tostring(label or "Henry")
+        KCD2MP_ShowInteractionMsg(text .. " is speaking")
+        pcall(function()
+            UIAction.CallFunction("hud",-1,"ShowTutorial",
+                "<b>"..text.." is in dialogue</b><br/>You are spectating. Henry controls the conversation.")
+        end)
+    else
+        pcall(function() UIAction.CallFunction("hud",-1,"HideTutorial") end)
+    end
+end
+
+-- 7. Crime attribution -------------------------------------------------------
+
+function KCD2MP_CompanionCrime(offender,kind,severity)
+    offender=tonumber(offender) or 0
+    local mine=(offender==tonumber(KCD2MP.cc.hostId) and KCD2MP.cc.isHost)
+    local g=KCD2MP.ghosts[tostring(offender)]
+    -- Existing reactive-aggression/native faction machinery targets the ghost,
+    -- not Henry's player soul. That makes temporary guard hostility per-player.
+    if g and KCD2MP_EnableAggro then pcall(function() KCD2MP_EnableAggro("on") end) end
+    local name=KCD2MP.ghostNames[tostring(offender)] or ("Player "..offender)
+    KCD2MP_ShowInteractionMsg(name .. " has attracted guard attention")
+end
+
+-- 8. Identity ---------------------------------------------------------------
+
+function KCD2MP_CompanionIdentityLocal(name,face,sex,background)
+    KCD2MP.cc.localIdentity={
+        name=tostring(name or "Companion"), face=tonumber(face) or 0,
+        sex=tostring(sex or "male"), background=tostring(background or "Commoner")
+    }
+end
+
+function KCD2MP_CompanionIdentityRemote(id,face,sex,name,background)
+    id=tostring(id)
+    KCD2MP.cc.identities[id]={
+        face=tonumber(face) or 0, sex=tonumber(sex) or 0,
+        name=tostring(name or "Companion"), background=tostring(background or "")
+    }
+    -- Name takes effect immediately. Face is consumed on the next spawn/
+    -- reconcile by the patched face selector below.
+    KCD2MP.ghostNames[id]=KCD2MP.cc.identities[id].name
+    if KCD2MP_SetGhostName then pcall(function() KCD2MP_SetGhostName(id,KCD2MP.cc.identities[id].name) end) end
+end
+
+function KCD2MP_CompanionFaceFor(id)
+    local x=KCD2MP.cc.identities[tostring(id)]
+    return x and x.face or nil
+end
+
+-- 9. Progression -------------------------------------------------------------
+
+local CC_SKILLS={
+    "strength","agility","vitality","warfare","sword","axe","mace","bow",
+    "marksmanship","unarmed","thievery","stealth","survival","craftsmanship",
+    "scholarship","speech"
+}
+
+function KCD2MP_CompanionSnapshotSkills(tag)
+    if not (player and player.soul) then return end
+    for _,skill in ipairs(CC_SKILLS) do
+        local ok,v=pcall(function() return player.soul:GetSkillLevel(skill) end)
+        if ok and type(v)=="number" then
+            KCD2MP_EmitEvent("comp_profile_skill",
+                string.format("%s %s %.4f",tostring(tag),skill,v))
+        end
+    end
+end
+
+-- The v0.3 snapshot function is wrapped rather than duplicated.
+local _cc_snapshot_base=KCD2MP_CompanionSnapshot
+function KCD2MP_CompanionSnapshot(tag)
+    local ok=false
+    if _cc_snapshot_base then ok=_cc_snapshot_base(tag) end
+    KCD2MP_CompanionSnapshotSkills(tag)
+    return ok
+end
+
+-- 10. Trade -----------------------------------------------------------------
+
+function KCD2MP_TradeBegin(id)
+    KCD2MP_EmitEvent("trade_begin",tostring(id or ""))
+end
+
+function KCD2MP_TradeState(kind,session,peer)
+    kind=tonumber(kind) or 0
+    if kind==0 then
+        KCD2MP.cc.trade.session=tonumber(session) or 0
+        KCD2MP.cc.trade.peer=tonumber(peer) or 0
+        KCD2MP_ShowInteractionMsg("Trade opened - use mp_trade_item / mp_trade_money, then mp_trade_accept")
+    elseif kind==1 then
+        KCD2MP_ShowInteractionMsg("Trade offer updated")
+    elseif kind==2 then
+        KCD2MP_ShowInteractionMsg("Trade accepted by one player")
+    end
+end
+
+function KCD2MP_TradeAddByIndex(line)
+    local f={}
+    for x in tostring(line or ""):gmatch("%S+") do table.insert(f,x) end
+    local idx=tonumber(f[1]); local amount=math.floor(tonumber(f[2]) or 1)
+    if not idx then return false end
+    local rows=cc_inventory_rows(player)
+    local r=rows[idx]
+    if not r then KCD2MP_ShowInteractionMsg("No inventory row "..tostring(idx)); return false end
+    amount=math.max(1,math.min(amount,r.amount))
+    KCD2MP_EmitEvent("trade_add",string.format("%s %d %.6f",r.cls,amount,r.health))
+    return true
+end
+
+function KCD2MP_TradeList()
+    local rows=cc_inventory_rows(player)
+    local html="<b>Trade inventory</b><br/>"
+    for i=1,math.min(#rows,20) do
+        local r=rows[i]
+        html=html..string.format("%d. %s x%d<br/>",i,r.cls,r.amount)
+    end
+    html=html.."<br/>mp_trade_item &lt;number&gt; &lt;amount&gt;"
+    pcall(function() UIAction.CallFunction("hud",-1,"ShowTutorial",html) end)
+end
+
+function KCD2MP_TradeCommitBegin(session,giveMoney,getMoney)
+    session=tostring(session)
+    if KCD2MP.cc.trade.applied[session] then return false end
+    KCD2MP.cc.trade.applying={session=session,give=tonumber(giveMoney) or 0,get=tonumber(getMoney) or 0,ok=true}
+    -- Validate money before any item mutation.
+    local have=0; pcall(function() have=player.inventory:GetMoney() or 0 end)
+    if have < KCD2MP.cc.trade.applying.give then KCD2MP.cc.trade.applying.ok=false end
+    return true
+end
+
+function KCD2MP_TradeCommitGive(cls,amount,health)
+    local a=KCD2MP.cc.trade.applying
+    if not (a and a.ok) then return end
+    local rows=cc_inventory_rows(player); local have=0
+    for _,r in ipairs(rows) do if r.cls==tostring(cls) then have=have+r.amount end end
+    if have < tonumber(amount) then a.ok=false; return end
+    cc_remove_amount(player,tostring(cls),tonumber(amount),nil)
+end
+
+function KCD2MP_TradeCommitReceive(cls,amount,health)
+    local a=KCD2MP.cc.trade.applying
+    if not (a and a.ok) then return end
+    pcall(function() player.inventory:CreateItem(tostring(cls),tonumber(health) or 1,tonumber(amount) or 1) end)
+end
+
+function KCD2MP_TradeCommitEnd()
+    local a=KCD2MP.cc.trade.applying
+    if not a then return end
+    if a.ok then
+        if a.give>0 then pcall(function() player.inventory:RemoveMoney(a.give) end) end
+        if a.get>0 then pcall(function() ItemUtils.AddMoneyToInventory(player,a.get) end) end
+        KCD2MP.cc.trade.applied[a.session]=true
+        KCD2MP_ShowInteractionMsg("Trade complete")
+    else
+        KCD2MP_ShowInteractionMsg("Trade failed validation - no money committed")
+    end
+    KCD2MP.cc.trade.applying=nil
+    KCD2MP.cc.trade.session=0
+end
+
+function KCD2MP_TradeCancelled()
+    KCD2MP.cc.trade.session=0
+    KCD2MP_ShowInteractionMsg("Trade cancelled")
+end
+
+-- Party map/distance/ping -----------------------------------------------------
+
+function KCD2MP_PartyPing()
+    if not player then return end
+    local p=player:GetWorldPos()
+    KCD2MP_EmitEvent("party_ping",string.format("%.3f %.3f %.3f",p.x,p.y,p.z))
+end
+
+function KCD2MP_PartyPingRemote(id,x,y,z)
+    KCD2MP.cc.pings[tostring(id)]={x=tonumber(x),y=tonumber(y),z=tonumber(z),untilAt=os.clock()+15}
+    local n=KCD2MP.ghostNames[tostring(id)] or "Companion"
+    KCD2MP_ShowInteractionMsg(n.." marked a location")
+end
+
+function KCD2MP_CompanionOverlayTick()
+    Script.SetTimer(250,KCD2MP_CompanionOverlayTick)
+    if not player then return end
+    local pp=player:GetWorldPos()
+    if not KCD2MP.cc.isHost and KCD2MP.cc.hostId~=0 then
+        local h=KCD2MP.ghosts[tostring(KCD2MP.cc.hostId)]
+        if h and h.entity then
+            local hp=h.entity:GetWorldPos()
+            local dx,dy,dz=hp.x-pp.x,hp.y-pp.y,hp.z-pp.z
+            local d=math.sqrt(dx*dx+dy*dy+dz*dz)
+            KCD2MP.cc.henryDistance=d
+        end
+    end
+    for id,p in pairs(KCD2MP.cc.pings) do
+        if os.clock()>p.untilAt then KCD2MP.cc.pings[id]=nil
+        else
+            pcall(function()
+                System.DrawLabel(p.x,p.y,p.z,1.5,"PING",1,1,1,1)
+            end)
+        end
+    end
+end
+Script.SetTimer(250,KCD2MP_CompanionOverlayTick)
+
+-- Commands
+pcall(function()
+    System.AddCCommand("mp_catch_up","KCD2MP_CatchUpToHenry(250)","Catch up to Henry when far away and out of combat")
+    System.AddCCommand("mp_revive","KCD2MP_ReviveNearest()","Revive the nearest downed player")
+    System.AddCCommand("mp_party_ping","KCD2MP_PartyPing()","Mark your current position for the party")
+    System.AddCCommand("mp_trade",'KCD2MP_TradeBegin("%LINE")',"Open trade with ghost id: mp_trade <id>")
+    System.AddCCommand("mp_trade_list","KCD2MP_TradeList()","Show numbered local inventory for trading")
+    System.AddCCommand("mp_trade_item",'KCD2MP_TradeAddByIndex("%LINE")',"Offer item: mp_trade_item <inventory-number> <amount>")
+    System.AddCCommand("mp_trade_money",'KCD2MP_EmitEvent("trade_money","%LINE")',"Offer groschen")
+    System.AddCCommand("mp_trade_accept",'KCD2MP_EmitEvent("trade_accept","")',"Accept current trade")
+    System.AddCCommand("mp_trade_cancel",'KCD2MP_EmitEvent("trade_cancel","")',"Cancel current trade")
+end)

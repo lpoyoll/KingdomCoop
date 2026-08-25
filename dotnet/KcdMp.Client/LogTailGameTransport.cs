@@ -191,6 +191,12 @@ public sealed class LogTailGameTransport : IGameTransport
     public Task UnequipItemOnGhostAsync(string ghostSoulName, Guid itemClass, CancellationToken ct = default) =>
         _http.UnequipItemOnGhostAsync(ghostSoulName, itemClass, ct);
 
+    public Task EquipItemOnPlayerAsync(Guid itemClass, CancellationToken ct = default) =>
+        _http.EquipItemOnPlayerAsync(itemClass, ct);
+
+    public Task SetPlayerStateAsync(string state, float value, CancellationToken ct = default) =>
+        _http.SetPlayerStateAsync(state, value, ct);
+
     public Task<Guid?> ReadGhostSoulGuidAsync(string ghostSoulName, CancellationToken ct = default) =>
         _http.ReadGhostSoulGuidAsync(ghostSoulName, ct);
 
@@ -245,6 +251,7 @@ public sealed class LogTailGameTransport : IGameTransport
     private bool _menuOpen;
     private bool _inventoryOpen;
     private bool _skipTimeActive;
+    private DateTime _lastCompanionCrimeUtc = DateTime.MinValue;
 
     private bool AggregatePaused => _menuOpen || _inventoryOpen || _skipTimeActive;
 
@@ -412,6 +419,15 @@ public sealed class LogTailGameTransport : IGameTransport
             // time). Those never appear on a [KCD2-MP-...] line, so checking
             // only here costs nothing on the hot (DATA-tagged) path.
             ProcessPauseMarkers(line);
+            if (line.Contains("crime_", StringComparison.OrdinalIgnoreCase))
+            {
+                var now = DateTime.UtcNow;
+                if ((now - _lastCompanionCrimeUtc).TotalMilliseconds > 750)
+                {
+                    _lastCompanionCrimeUtc = now;
+                    GameEvent?.Invoke("crime_auto", "0 1");
+                }
+            }
             return;
         }
 

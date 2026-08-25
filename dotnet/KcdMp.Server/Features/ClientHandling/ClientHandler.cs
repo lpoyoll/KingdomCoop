@@ -7,7 +7,7 @@ namespace KcdMp.Server.Features.ClientHandling;
 /// loop while broadcasts and the info endpoint read the list concurrently, so
 /// the lock lives here rather than at each call site.
 /// </summary>
-public class ClientHandler
+public partial class ClientHandler
 {
 	private readonly List<ClientSession> _clients = [];
 	private readonly object _lock = new();
@@ -68,11 +68,12 @@ public class ClientHandler
 		{
 			lock (_lock)
 			{
-				ClientSession? best = null;
-				foreach (var c in _clients)
-					if (c.IsReady && (best is null || c.Id < best.Id))
-						best = c;
-				return best;
+				// Companion Co-op: Henry's explicitly-claimed local connection
+				// owns world/NPC damage authority for the session. It never
+				// migrates to a guest when Henry leaves.
+				return _campaignHost is { IsReady: true } h && _clients.Contains(h)
+					? h
+					: null;
 			}
 		}
 	}

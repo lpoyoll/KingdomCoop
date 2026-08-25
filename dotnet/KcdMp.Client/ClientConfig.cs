@@ -14,7 +14,7 @@ namespace KcdMp.Client;
 /// only on NAudio, and Microsoft.Extensions.Configuration is not part of the
 /// shared framework for a plain console app.
 /// </summary>
-public sealed class ClientConfig
+public sealed partial class ClientConfig
 {
     public const string FileName = "kcdmp-client.json";
 
@@ -153,6 +153,8 @@ public sealed class ClientConfig
                 return new ClientConfig();
             }
 
+            config.NormaliseCompanionSettings();
+            config.Save(path);
             Console.WriteLine($"[config] Loaded {path}");
             return config;
         }

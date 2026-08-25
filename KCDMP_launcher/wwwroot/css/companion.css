@@ -1,0 +1,10 @@
+
+/* Companion Co-op front page */
+.companion-home { max-width: 1180px; margin: 0 auto; }
+.companion-hero { text-align:center; padding:48px 28px 36px; }
+.companion-tagline { font-size:1.15rem; opacity:.88; margin:0 auto 28px; max-width:680px; }
+.companion-actions { display:flex; gap:22px; justify-content:center; flex-wrap:wrap; }
+.companion-main-btn { min-width:260px; min-height:72px; font-size:1.25rem; }
+.companion-note { margin-top:24px; opacity:.65; }
+.companion-advanced { margin:18px 28px 40px; }
+.companion-advanced > summary { cursor:pointer; padding:12px; opacity:.8; }
