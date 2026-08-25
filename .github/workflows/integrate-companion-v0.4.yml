@@ -75,6 +75,22 @@ jobs:
             throw 'Expected the verified 0.17.0 package guard before rebasing.'
           }
           $text = $text.Replace('0.17.0', '0.17.1')
+
+          # The package contains the v0.4 state-write extension before the
+          # v0.3 compatibility block that introduces EquipItemOnPlayerAsync.
+          # Move it after the transport compatibility block so every anchor
+          # is applied to the state it was designed for.
+          $stateStart = $text.IndexOf('# Reflection-backed player state write.')
+          $stateEnd = $text.IndexOf('# Start/stop all requested systems with the session.', $stateStart)
+          $gameBridgeStart = $text.IndexOf('# GameBridge integration.')
+          if ($stateStart -lt 0 -or $stateEnd -le $stateStart -or $gameBridgeStart -lt 0) {
+            throw 'Could not locate the verified transport/state integration blocks.'
+          }
+          $stateBlock = $text.Substring($stateStart, $stateEnd - $stateStart)
+          $text = $text.Remove($stateStart, $stateEnd - $stateStart)
+          $gameBridgeStart = $text.IndexOf('# GameBridge integration.')
+          $text = $text.Insert($gameBridgeStart, $stateBlock + [Environment]::NewLine)
+
           [IO.File]::WriteAllText($apply, $text, [Text.UTF8Encoding]::new($false))
 
           $metadata = Join-Path $env:KINGDOMCOOP_PACK 'BUILD-METADATA.json'
